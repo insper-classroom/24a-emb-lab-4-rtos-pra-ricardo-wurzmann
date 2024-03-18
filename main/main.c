@@ -10,14 +10,13 @@
 
 const uint TRIG_PIN = 12;
 const uint ECHO_PIN = 13;
-const uint MAX_DISTANCE = 150; // Máxima distância em cm que queremos medir
+const uint MAX_DISTANCE = 150; // Máxima distância em cm
 
-// Definições para o display OLED
 ssd1306_t disp;
 #define OLED_WIDTH  128
 #define OLED_HEIGHT 32
 
-// Filas e semáforos para sincronização
+QueueHandle_t xQueueTime;
 QueueHandle_t xQueueDistance;
 SemaphoreHandle_t xSemaphoreTrigger;
 
@@ -30,53 +29,51 @@ void pin_callback(uint gpio, uint32_t events) {
     } else if (events & GPIO_IRQ_EDGE_FALL) {
         end_time = to_us_since_boot(get_absolute_time());
         time_diff = end_time - start_time;
-        // Enviar somente se o tempo de resposta faz sentido
-        if (time_diff < MAX_DISTANCE * 58) { // 58 us por cm é uma aproximação do tempo de viagem do som
-            xQueueSendFromISR(xQueueDistance, &time_diff, NULL);
-        } else {
-            // Valor muito alto, pode ser um erro ou objeto muito distante
-            time_diff = UINT64_MAX;
-            xQueueSendFromISR(xQueueDistance, &time_diff, NULL);
-        }
+        xQueueSendFromISR(xQueueTime, &time_diff, NULL);
     }
 }
 
 void trigger_task(void *pvParameters) {
     while (1) {
         gpio_put(TRIG_PIN, 1);
-        vTaskDelay(pdMS_TO_TICKS(10)); // Trigger pulse for 10 us
+        vTaskDelay(pdMS_TO_TICKS(10)); // Send trigger pulse for 10 microseconds
         gpio_put(TRIG_PIN, 0);
         xSemaphoreGive(xSemaphoreTrigger);
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Delay de 1 segundo antes do próximo ciclo
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for 1 second before next pulse
+    }
+}
+
+void echo_task(void *pvParameters) {
+    uint64_t time_diff;
+    float distance;
+
+    while (1) {
+        if (xQueueReceive(xQueueTime, &time_diff, portMAX_DELAY)) {
+            if (time_diff < MAX_DISTANCE * 58) { // Check if distance is within range
+                distance = (float)time_diff * 0.0343 / 2.0; // Convert time to distance
+                xQueueSend(xQueueDistance, &distance, portMAX_DELAY);
+            }
+        }
     }
 }
 
 void display_task(void *pvParameters) {
-    uint64_t time_elapsed;
     float distance;
-    char buffer[32]; // Buffer for string formatting
+    char buffer[32];
 
-    ssd1306_init(); // Assuming no parameters needed
+    ssd1306_init();
     gfx_init(&disp, OLED_WIDTH, OLED_HEIGHT);
 
     while (1) {
         if (xSemaphoreTake(xSemaphoreTrigger, portMAX_DELAY)) {
-            if (xQueueReceive(xQueueDistance, &time_elapsed, portMAX_DELAY)) {
+            if (xQueueReceive(xQueueDistance, &distance, portMAX_DELAY)) {
                 gfx_clear_buffer(&disp);
-
-                if (time_elapsed == UINT64_MAX) {
-                    snprintf(buffer, sizeof(buffer), "Sensor falhou");
-                } else {
-                    distance = (float)time_elapsed * 0.0343 / 2.0;
-                    snprintf(buffer, sizeof(buffer), "Dist: %.2f cm", distance);
-                }
-
+                snprintf(buffer, sizeof(buffer), "Dist: %.2f cm", distance);
                 gfx_draw_string(&disp, 0, 0, 1, buffer);
-                
-                // Desenhar barra de distância
-                int bar_length = (int)((distance / MAX_DISTANCE) * (OLED_WIDTH - 1));
-                gfx_draw_line(&disp, 0, OLED_HEIGHT - 10, bar_length, OLED_HEIGHT - 10);
 
+                int bar_length = (int)((distance / MAX_DISTANCE) * OLED_WIDTH);
+                gfx_draw_line(&disp, 0, OLED_HEIGHT - 10, bar_length, OLED_HEIGHT - 10);
+                
                 gfx_show(&disp);
             }
         }
@@ -91,10 +88,12 @@ int main(void) {
     gpio_set_dir(ECHO_PIN, GPIO_IN);
     gpio_set_irq_enabled_with_callback(ECHO_PIN, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, &pin_callback);
 
-    xQueueDistance = xQueueCreate(10, sizeof(uint64_t));
+    xQueueTime = xQueueCreate(10, sizeof(uint64_t));
+    xQueueDistance = xQueueCreate(10, sizeof(float));
     xSemaphoreTrigger = xSemaphoreCreateBinary();
 
     xTaskCreate(trigger_task, "Trigger Task", 256, NULL, 1, NULL);
+    xTaskCreate(echo_task, "Echo Task", 256, NULL, 1, NULL);
     xTaskCreate(display_task, "Display Task", 256, NULL, 1, NULL);
 
     vTaskStartScheduler();
