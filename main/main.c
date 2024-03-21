@@ -46,16 +46,25 @@ void trigger_task(void *pvParameters) {
 void echo_task(void *pvParameters) {
     uint64_t time_diff;
     float distance;
+    TickType_t xLastWakeTime;
+    const TickType_t xMaxDelay = pdMS_TO_TICKS(4000); // 4 segundos
+
+    xLastWakeTime = xTaskGetTickCount();
 
     while (1) {
-        if (xQueueReceive(xQueueTime, &time_diff, portMAX_DELAY)) {
-            if (time_diff < MAX_DISTANCE * 58) { // Check if distance is within range
-                distance = (float)time_diff * 0.0343 / 2.0; // Convert time to distance
+        if (xQueueReceive(xQueueTime, &time_diff, xMaxDelay)) {
+            if (time_diff < MAX_DISTANCE * 58) {
+                distance = (float)time_diff * 0.0343 / 2.0;
                 xQueueSend(xQueueDistance, &distance, portMAX_DELAY);
             }
+        } else {
+            // Não recebeu dados em 4 segundos, envia sinal de erro
+            distance = -1.0f;
+            xQueueSend(xQueueDistance, &distance, portMAX_DELAY);
         }
     }
 }
+
 
 void oled_task(void *pvParameters) {
     float distance;
@@ -68,17 +77,25 @@ void oled_task(void *pvParameters) {
         if (xSemaphoreTake(xSemaphoreTrigger, portMAX_DELAY)) {
             if (xQueueReceive(xQueueDistance, &distance, portMAX_DELAY)) {
                 gfx_clear_buffer(&disp);
-                snprintf(buffer, sizeof(buffer), "Dist: %.2f cm", distance);
-                gfx_draw_string(&disp, 0, 0, 1, buffer);
 
-                int bar_length = (int)((distance / MAX_DISTANCE) * OLED_WIDTH);
-                gfx_draw_line(&disp, 0, OLED_HEIGHT - 10, bar_length, OLED_HEIGHT - 10);
+                if (distance >= 0) {
+                    snprintf(buffer, sizeof(buffer), "Dist: %.2f cm", distance);
+                    gfx_draw_string(&disp, 0, 0, 1, buffer);
+
+                    int bar_length = (int)((distance / MAX_DISTANCE) * OLED_WIDTH);
+                    gfx_draw_line(&disp, 0, OLED_HEIGHT - 10, bar_length, OLED_HEIGHT - 10);
+                } else {
+                    // Mensagem de erro se não houver leitura
+                    snprintf(buffer, sizeof(buffer), "Erro: Sem leitura");
+                    gfx_draw_string(&disp, 0, 0, 1, buffer);
+                }
                 
                 gfx_show(&disp);
             }
         }
     }
 }
+
 
 int main(void) {
     stdio_init_all();
