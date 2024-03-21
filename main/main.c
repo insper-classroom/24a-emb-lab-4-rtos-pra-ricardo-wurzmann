@@ -57,7 +57,7 @@ void echo_task(void *pvParameters) {
     }
 }
 
-void display_task(void *pvParameters) {
+void oled_task(void *pvParameters) {
     float distance;
     char buffer[32];
 
@@ -94,7 +94,7 @@ int main(void) {
 
     xTaskCreate(trigger_task, "Trigger Task", 256, NULL, 1, NULL);
     xTaskCreate(echo_task, "Echo Task", 256, NULL, 1, NULL);
-    xTaskCreate(display_task, "Display Task", 256, NULL, 1, NULL);
+    xTaskCreate(oled_task, "Display Task", 256, NULL, 1, NULL);
 
     vTaskStartScheduler();
 
